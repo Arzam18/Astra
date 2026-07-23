@@ -1,46 +1,33 @@
 name: Build Astra Android
-
 on:
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
-    
     strategy:
       matrix:
         build: [generic, neon, dotprod]
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++-aarch64-linux-gnu
-
+          sudo apt-get install -y g++-13-aarch64-linux-gnu wget
+      - name: Download NNUE
+        run: wget -O weights-v5-perm.nnue https://github.com/h1me01/Astra/releases/download/weights/weights-v5-perm.nnue
       - name: Build ${{ matrix.build }}
         run: |
-          if [ "${{ matrix.build }}" = "generic" ]; then
-            CXXFLAGS="-O3 -static -march=armv8-a"
-          elif [ "${{ matrix.build }}" = "neon" ]; then
-            CXXFLAGS="-O3 -static -march=armv8-a+simd"
-          else
-            CXXFLAGS="-O3 -static -march=armv8-a+dotprod"
-          fi
+          if [ "${{ matrix.build }}" = "generic" ]; then CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a";
+          elif [ "${{ matrix.build }}" = "neon" ]; then CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a+simd";
+          else CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a+dotprod"; fi
           make clean
-          make CXX=aarch64-linux-gnu-g++ CXXFLAGS="$CXXFLAGS" EXE=astra-${{ matrix.build }}
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+          make CXX=aarch64-linux-gnu-g++-13 CXXFLAGS="$CXXFLAGS" EXE=astra-${{ matrix.build }}
+      - uses: actions/upload-artifact@v4
         with:
           name: astra-${{ matrix.build }}
           path: astra-${{ matrix.build }}
-
-      - name: Create Release
+      - uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0-${{ matrix.build }}
           name: Astra Android ${{ matrix.build }}
