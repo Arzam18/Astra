@@ -1,0 +1,48 @@
+name: Build Astra Android
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        build: [generic, neon, dotprod]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-aarch64-linux-gnu
+
+      - name: Build ${{ matrix.build }}
+        run: |
+          if [ "${{ matrix.build }}" = "generic" ]; then
+            CXXFLAGS="-O3 -static -march=armv8-a"
+          elif [ "${{ matrix.build }}" = "neon" ]; then
+            CXXFLAGS="-O3 -static -march=armv8-a+simd"
+          else
+            CXXFLAGS="-O3 -static -march=armv8-a+dotprod"
+          fi
+          make clean
+          make CXX=aarch64-linux-gnu-g++ CXXFLAGS="$CXXFLAGS" EXE=astra-${{ matrix.build }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: astra-${{ matrix.build }}
+          path: astra-${{ matrix.build }}
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0-${{ matrix.build }}
+          name: Astra Android ${{ matrix.build }}
+          files: astra-${{ matrix.build }}
+          prerelease: true
