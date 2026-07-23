@@ -15,9 +15,9 @@ jobs:
           sudo apt-get install -y g++-13-aarch64-linux-gnu
       - name: Build ${{ matrix.build }}
         run: |
-          if [ "${{ matrix.build }}" = "generic" ]; then CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a";
-          elif [ "${{ matrix.build }}" = "neon" ]; then CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a+simd";
-          else CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a+dotprod"; fi
+          if [ "${{ matrix.build }}" = "generic" ]; then CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a -DNO_SSE";
+          elif [ "${{ matrix.build }}" = "neon" ]; then CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a+simd -DNO_SSE";
+          else CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a+dotprod -DNO_SSE"; fi
           make clean
           make CXX=aarch64-linux-gnu-g++-13 CXXFLAGS="$CXXFLAGS" EXE=astra-${{ matrix.build }}
       - uses: actions/upload-artifact@v4
