@@ -52,15 +52,16 @@ jobs:
 
               # Globally replace any x86 intrinsic header with SIMDe equivalents on ARM64
               for header in x86_headers:
-                  if header in content:
+                  target = f"#include {header}"
+                  if target in content:
                       simde_block = f"""#if defined(__aarch64__) || defined(__ARM_NEON)
           #define SIMDE_ENABLE_NATIVE_ALIASES
           #include "simde/x86/avx2.h"
           #include "simde/x86/fma.h"
           #else
-          #include {header}
+          {target}
           #endif"""
-                      content = content.replace(header, simde_block)
+                      content = content.replace(target, simde_block)
 
               # Ensure 256-bit vector types activate on ARM64 in Simd.h
               if "simd.h" in path.lower():
@@ -100,7 +101,7 @@ jobs:
             -funroll-loops -fomit-frame-pointer -fno-exceptions \
             -DNDEBUG -static-libstdc++ \
             -DNNUE_PATH=\"weights-v5-perm.nnue\" \
-            -I. -Isrc \
+            -I. -Isrc -I./simde \
             $SOURCES -lm -o astra-android-arm64
 
           mkdir -p dist/bin
