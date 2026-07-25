@@ -35,6 +35,21 @@ jobs:
           python3 -c '
           import os
 
+          # All standard x86 SIMD headers to intercept
+          x86_headers = [
+              "<immintrin.h>", "<xmmintrin.h>", "<emmintrin.h>",
+              "<pmmintrin.h>", "<tmmintrin.h>", "<smmintrin.h>",
+              "<nmmintrin.h>", "<mmintrin.h>"
+          ]
+
+          simde_replacement = """#if defined(__aarch64__) || defined(__ARM_NEON)
+          #define SIMDE_ENABLE_NATIVE_ALIASES
+          #include "simde/x86/avx2.h"
+          #include "simde/x86/fma.h"
+          #else
+          #include {hdr}
+          #endif"""
+
           def patch_file(path):
               # Skip SIMDe repository files from being modified
               if "simde" in path.split(os.sep):
@@ -45,16 +60,10 @@ jobs:
 
               original = content
 
-              # Replace x86 immintrin.h with SIMDe headers on ARM64
-              if "<immintrin.h>" in content:
-                  replacement = """#if defined(__aarch64__) || defined(__ARM_NEON)
-          #define SIMDE_ENABLE_NATIVE_ALIASES
-          #include "simde/x86/avx2.h"
-          #include "simde/x86/fma.h"
-          #else
-          #include <immintrin.h>
-          #endif"""
-                  content = content.replace("<immintrin.h>", replacement)
+              # Replace ANY x86 intrinsic header with SIMDe AVX2/FMA headers for ARM64
+              for header in x86_headers:
+                  if header in content:
+                      content = content.replace(header, simde_replacement.format(hdr=header))
 
               # Activate 256-bit vector types in Simd.h for ARM64
               if "simd.h" in path.lower():
