@@ -27,45 +27,20 @@ jobs:
           WEIGHTS_URL="https://github.com/h1me01/Astra-Networks/releases/download/weights/${WEIGHTS_FILE}"
           curl -sL "$WEIGHTS_URL" -o "$WEIGHTS_FILE"
 
-      - name: Setup SIMDe (Headers Only) and Patch for ARM64
+      - name: Setup SIMDe Header Wrappers
         run: |
-          # Download SIMDe headers to root directory (NOT inside src/)
+          # Download SIMDe headers to root directory
           git clone --depth 1 https://github.com/simd-everywhere/simde.git
 
+          # Enable SIMDe native alias mode on all translated headers
           python3 -c '
           import os
 
-          # All standard x86 SIMD headers to intercept
-          x86_headers = [
-              "<immintrin.h>", "<xmmintrin.h>", "<emmintrin.h>",
-              "<pmmintrin.h>", "<tmmintrin.h>", "<smmintrin.h>",
-              "<nmmintrin.h>", "<mmintrin.h>"
-          ]
-
-          simde_replacement = """#if defined(__aarch64__) || defined(__ARM_NEON)
-          #define SIMDE_ENABLE_NATIVE_ALIASES
-          #include "simde/x86/avx2.h"
-          #include "simde/x86/fma.h"
-          #else
-          #include {hdr}
-          #endif"""
-
-          def patch_file(path):
-              # Skip SIMDe repository files from being modified
-              if "simde" in path.split(os.sep):
-                  return
-
+          def patch_simd_types(path):
               with open(path, "r", encoding="utf-8", errors="ignore") as f:
                   content = f.read()
 
-              original = content
-
-              # Replace ANY x86 intrinsic header with SIMDe AVX2/FMA headers for ARM64
-              for header in x86_headers:
-                  if header in content:
-                      content = content.replace(header, simde_replacement.format(hdr=header))
-
-              # Activate 256-bit vector types in Simd.h for ARM64
+              # Enable 256-bit vector types in Simd.h on ARM64
               if "simd.h" in path.lower():
                   content = content.replace(
                       "#elif defined(__AVX2__) || defined(__AVX__)",
@@ -79,22 +54,20 @@ jobs:
                       "posix_memalign(&ptr, Alignment, std::max(alignedBytes, Alignment));"
                   )
 
-              if content != original:
-                  with open(path, "w", encoding="utf-8") as f:
-                      f.write(content)
-                  print(f"Patched: {path}")
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(content)
 
-          for root, dirs, files in os.walk("."):
+          for root, dirs, files in os.walk("src"):
               for file in files:
                   if file.endswith((".h", ".hpp", ".cpp", ".cc", ".c")):
-                      patch_file(os.path.join(root, file))
+                      patch_simd_types(os.path.join(root, file))
           '
 
       - name: Build Astra for Android ARM64
         run: |
           NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
 
-          # Collect ONLY Astra source files (ignoring the simde folder)
+          # Collect Astra source files (strictly inside src/ and third_party/)
           SOURCES=$(find src -type f \( -name "*.cpp" -o -name "*.cc" \))
           if [ -f "third_party/fathom/tbprobe.c" ]; then
             SOURCES="$SOURCES third_party/fathom/tbprobe.c"
@@ -105,8 +78,9 @@ jobs:
             -march=armv8.2-a+dotprod+crypto \
             -funroll-loops -fomit-frame-pointer -fno-exceptions \
             -DNDEBUG -static-libstdc++ \
+            -DSIMDE_ENABLE_NATIVE_ALIASES \
             -DNNUE_PATH=\"weights-v5-perm.nnue\" \
-            -I. -Isrc -Ithird_party/fathom \
+            -I./simde/simde/x86 -I. -Isrc -Ithird_party/fathom \
             $SOURCES -lm -o astra-android-arm64
 
           mkdir -p dist/bin
