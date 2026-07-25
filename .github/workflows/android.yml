@@ -1,37 +1,112 @@
-    - name: Download SIMDe and Patch for ARM64
-      run: |
-        # 1. Clone SIMDe and copy its headers directly into src/
-        git clone https://github.com/simd-everywhere/simde.git
-        cp -r simde/simde src/
+name: Build Astra for Android
 
-        # 2. Patch simd.h to use SIMDe's AVX2 translation on ARM64
-        python3 -c "
-        import os
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "*" ]
+  pull_request:
+    branches: [ "*" ]
 
-        for root, dirs, files in os.walk('.'):
-            for file in files:
-                if file.lower() == 'simd.h':
-                    path = os.path.join(root, file)
-                    with open(path, 'r') as f:
-                        content = f.read()
+permissions:
+  contents: write
 
-                    # Enable SIMDe AVX2 native aliases for ARM
-                    if '#include <immintrin.h>' in content:
-                        replacement = '''#if defined(__aarch64__) || defined(__ARM_NEON)
-        #define SIMDE_ENABLE_NATIVE_ALIASES
-        #include \"simde/x86/avx2.h\"
-        #include \"simde/x86/fma.h\"
-        #else
-        #include <immintrin.h>
-        #endif'''
-                        content = content.replace('#include <immintrin.h>', replacement)
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
 
-                    # Ensure ivec_t and fvec_t are defined for ARM64
-                    content = content.replace(
-                        '#elif defined(__AVX2__) || defined(__AVX__)',
-                        '#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)'
-                    )
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
 
-                    with open(path, 'w') as f:
-                        f.write(content)
-        "
+      - name: Download Network Weight File
+        run: |
+          WEIGHTS_FILE="weights-v5-perm.nnue"
+          WEIGHTS_URL="https://github.com/h1me01/Astra-Networks/releases/download/weights/${WEIGHTS_FILE}"
+          curl -sL "$WEIGHTS_URL" -o "$WEIGHTS_FILE"
+
+      - name: Setup SIMDe and Patch SIMD Headers for ARM64
+        run: |
+          # Download SIMDe to translate 256-bit AVX2/FMA to ARM64 NEON
+          git clone --depth 1 https://github.com/simd-everywhere/simde.git simde_repo
+          cp -r simde_repo/simde src/
+
+          python3 -c '
+          import os
+
+          def patch_file(path):
+              with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                  content = f.read()
+
+              original = content
+
+              # Replace x86 immintrin.h with SIMDe AVX2/FMA headers for ARM64
+              if "<immintrin.h>" in content:
+                  replacement = """#if defined(__aarch64__) || defined(__ARM_NEON)
+          #define SIMDE_ENABLE_NATIVE_ALIASES
+          #include "simde/x86/avx2.h"
+          #include "simde/x86/fma.h"
+          #else
+          #include <immintrin.h>
+          #endif"""
+                  content = content.replace("<immintrin.h>", replacement)
+
+              # Ensure ivec_t and fvec_t typedefs in Simd.h activate on ARM64
+              if "simd.h" in path.lower():
+                  content = content.replace(
+                      "#elif defined(__AVX2__) || defined(__AVX__)",
+                      "#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)"
+                  )
+
+              # Patch std::aligned_alloc fallback for Android NDK
+              if "std::aligned_alloc" in content:
+                  content = content.replace(
+                      "ptr = std::aligned_alloc(Alignment, std::max(alignedBytes, Alignment));",
+                      "posix_memalign(&ptr, Alignment, std::max(alignedBytes, Alignment));"
+                  )
+
+              if content != original:
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.write(content)
+                  print(f"Patched: {path}")
+
+          for root, dirs, files in os.walk("."):
+              for file in files:
+                  if file.endswith((".h", ".hpp", ".cpp", ".cc", ".c")):
+                      patch_file(os.path.join(root, file))
+          '
+
+      - name: Build Astra for Android ARM64
+        run: |
+          NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
+
+          # Find all C++ sources and Fathom tablebase code
+          SOURCES=$(find src -type f \( -name "*.cpp" -o -name "*.cc" \))
+          if [ -f "third_party/fathom/tbprobe.c" ]; then
+            SOURCES="$SOURCES third_party/fathom/tbprobe.c"
+          fi
+
+          echo "Compiling High-Performance Astra for Android ARM64..."
+          $NDK_CXX -O3 -flto -std=c++20 -pthread \
+            -march=armv8.2-a+dotprod+crypto \
+            -funroll-loops -fomit-frame-pointer -fno-exceptions \
+            -DNDEBUG -static-libstdc++ \
+            -DNNUE_PATH=\"weights-v5-perm.nnue\" \
+            -I. -Isrc -Ithird_party/fathom \
+            $SOURCES -lm -o astra-android-arm64
+
+          mkdir -p dist/bin
+          mv astra-android-arm64 dist/bin/
+
+      - name: Verify Android Binary
+        run: |
+          ls -lh dist/bin/
+          file dist/bin/*
+
+      - name: Upload Android Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: astra-android-arm64
+          path: dist/bin/*
