@@ -63,47 +63,54 @@ jobs:
           #endif"""
                       content = content.replace(target, simde_block)
 
-              # Patch simd.h for ARM64 vector types and safe shift switch-cases
+              # Patch simd.h for ARM64 vector types and complete function replacement for shifts
               if "simd.h" in path.lower():
                   content = content.replace(
                       "#elif defined(__AVX2__) || defined(__AVX__)",
                       "#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)"
                   )
 
-                  # Inject switch-case macros for shifts requiring compile-time constants on ARM NEON
-                  shift_helpers = """
-          #if defined(__aarch64__) || defined(__ARM_NEON)
-          #define ASTRA_SW_SH16(op, a, imm) \\
-              switch(imm) { \\
-                  case 0: return op(a, 0); case 1: return op(a, 1); case 2: return op(a, 2); case 3: return op(a, 3); \\
-                  case 4: return op(a, 4); case 5: return op(a, 5); case 6: return op(a, 6); case 7: return op(a, 7); \\
-                  case 8: return op(a, 8); case 9: return op(a, 9); case 10: return op(a, 10); case 11: return op(a, 11); \\
-                  case 12: return op(a, 12); case 13: return op(a, 13); case 14: return op(a, 14); case 15: return op(a, 15); \\
-                  default: return op(a, 0); \\
-              }
-          #define ASTRA_SW_SH32(op, a, imm) \\
-              switch(imm) { \\
-                  case 0: return op(a, 0); case 1: return op(a, 1); case 2: return op(a, 2); case 3: return op(a, 3); \\
-                  case 4: return op(a, 4); case 5: return op(a, 5); case 6: return op(a, 6); case 7: return op(a, 7); \\
-                  case 8: return op(a, 8); case 9: return op(a, 9); case 10: return op(a, 10); case 11: return op(a, 11); \\
-                  case 12: return op(a, 12); case 13: return op(a, 13); case 14: return op(a, 14); case 15: return op(a, 15); \\
-                  case 16: return op(a, 16); case 17: return op(a, 17); case 18: return op(a, 18); case 19: return op(a, 19); \\
-                  case 20: return op(a, 20); case 21: return op(a, 21); case 22: return op(a, 22); case 23: return op(a, 23); \\
-                  case 24: return op(a, 24); case 25: return op(a, 25); case 26: return op(a, 26); case 27: return op(a, 27); \\
-                  case 28: return op(a, 28); case 29: return op(a, 29); case 30: return op(a, 30); case 31: return op(a, 31); \\
-                  default: return op(a, 0); \\
-              }
-          #endif
-          """
-                  content = shift_helpers + content
-                  
-                  # Replace shift implementations to use the switch helpers on ARM64
-                  content = content.replace("return _mm256_slli_epi16(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH16(_mm256_slli_epi16, a, imm)\n#else\n    return _mm256_slli_epi16(a, imm);\n#endif")
-                  content = content.replace("return _mm256_srli_epi16(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH16(_mm256_srli_epi16, a, imm)\n#else\n    return _mm256_srli_epi16(a, imm);\n#endif")
-                  content = content.replace("return _mm256_srai_epi16(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH16(_mm256_srai_epi16, a, imm)\n#else\n    return _mm256_srai_epi16(a, imm);\n#endif")
-                  content = content.replace("return _mm256_slli_epi32(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH32(_mm256_slli_epi32, a, imm)\n#else\n    return _mm256_slli_epi32(a, imm);\n#endif")
-                  content = content.replace("return _mm256_srli_epi32(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH32(_mm256_srli_epi32, a, imm)\n#else\n    return _mm256_srli_epi32(a, imm);\n#endif")
-                  content = content.replace("return _mm256_srai_epi32(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH32(_mm256_srai_epi32, a, imm)\n#else\n    return _mm256_srai_epi32(a, imm);\n#endif")
+                  def generate_switch_function(func_name, intrinsic_name, max_imm):
+                      cases = []
+                      for i in range(max_imm + 1):
+                          cases.append(f"        case {i}: return {intrinsic_name}(a, {i});")
+                      cases_str = "\n".join(cases)
+                      return f"""#if defined(__aarch64__) || defined(__ARM_NEON)
+          inline ivec_t {func_name}(ivec_t a, int imm) {{
+              switch(imm) {{
+          {cases_str}
+                  default: return {intrinsic_name}(a, 0);
+              }}
+          }}
+          #else
+          inline ivec_t {func_name}(ivec_t a, int imm) {{ return {intrinsic_name}(a, imm); }}
+          #endif"""
+
+                  # Replace shift function definitions completely to avoid runtime-to-constant errors on ARM NEON
+                  content = content.replace(
+                      "inline ivec_t slli_epi16(ivec_t a, int imm) { return _mm256_slli_epi16(a, imm); }",
+                      generate_switch_function("slli_epi16", "_mm256_slli_epi16", 15)
+                  )
+                  content = content.replace(
+                      "inline ivec_t srli_epi16(ivec_t a, int imm) { return _mm256_srli_epi16(a, imm); }",
+                      generate_switch_function("srli_epi16", "_mm256_srli_epi16", 15)
+                  )
+                  content = content.replace(
+                      "inline ivec_t srai_epi16(ivec_t a, int imm) { return _mm256_srai_epi16(a, imm); }",
+                      generate_switch_function("srai_epi16", "_mm256_srai_epi16", 15)
+                  )
+                  content = content.replace(
+                      "inline ivec_t slli_epi32(ivec_t a, int imm) { return _mm256_slli_epi32(a, imm); }",
+                      generate_switch_function("slli_epi32", "_mm256_slli_epi32", 31)
+                  )
+                  content = content.replace(
+                      "inline ivec_t srli_epi32(ivec_t a, int imm) { return _mm256_srli_epi32(a, imm); }",
+                      generate_switch_function("srli_epi32", "_mm256_srli_epi32", 31)
+                  )
+                  content = content.replace(
+                      "inline ivec_t srai_epi32(ivec_t a, int imm) { return _mm256_srai_epi32(a, imm); }",
+                      generate_switch_function("srai_epi32", "_mm256_srai_epi32", 31)
+                  )
 
               # Patch util.h for _mm_malloc / _mm_free and std::aligned_alloc fallbacks
               if "util.h" in path.lower() or "util.hpp" in path.lower():
