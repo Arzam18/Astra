@@ -27,22 +27,25 @@ jobs:
           WEIGHTS_URL="https://github.com/h1me01/Astra-Networks/releases/download/weights/${WEIGHTS_FILE}"
           curl -sL "$WEIGHTS_URL" -o "$WEIGHTS_FILE"
 
-      - name: Setup SIMDe and Patch SIMD Headers for ARM64
+      - name: Setup SIMDe (Headers Only) and Patch for ARM64
         run: |
-          # Download SIMDe to translate 256-bit AVX2/FMA to ARM64 NEON
-          git clone --depth 1 https://github.com/simd-everywhere/simde.git simde_repo
-          cp -r simde_repo/simde src/
+          # Download SIMDe headers to root directory (NOT inside src/)
+          git clone --depth 1 https://github.com/simd-everywhere/simde.git
 
           python3 -c '
           import os
 
           def patch_file(path):
+              # Skip SIMDe repository files from being modified
+              if "simde" in path.split(os.sep):
+                  return
+
               with open(path, "r", encoding="utf-8", errors="ignore") as f:
                   content = f.read()
 
               original = content
 
-              # Replace x86 immintrin.h with SIMDe AVX2/FMA headers for ARM64
+              # Replace x86 immintrin.h with SIMDe headers on ARM64
               if "<immintrin.h>" in content:
                   replacement = """#if defined(__aarch64__) || defined(__ARM_NEON)
           #define SIMDE_ENABLE_NATIVE_ALIASES
@@ -53,7 +56,7 @@ jobs:
           #endif"""
                   content = content.replace("<immintrin.h>", replacement)
 
-              # Ensure ivec_t and fvec_t typedefs in Simd.h activate on ARM64
+              # Activate 256-bit vector types in Simd.h for ARM64
               if "simd.h" in path.lower():
                   content = content.replace(
                       "#elif defined(__AVX2__) || defined(__AVX__)",
@@ -82,13 +85,13 @@ jobs:
         run: |
           NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
 
-          # Find all C++ sources and Fathom tablebase code
+          # Collect ONLY Astra source files (ignoring the simde folder)
           SOURCES=$(find src -type f \( -name "*.cpp" -o -name "*.cc" \))
           if [ -f "third_party/fathom/tbprobe.c" ]; then
             SOURCES="$SOURCES third_party/fathom/tbprobe.c"
           fi
 
-          echo "Compiling High-Performance Astra for Android ARM64..."
+          echo "Compiling Astra for Android ARM64..."
           $NDK_CXX -O3 -flto -std=c++20 -pthread \
             -march=armv8.2-a+dotprod+crypto \
             -funroll-loops -fomit-frame-pointer -fno-exceptions \
