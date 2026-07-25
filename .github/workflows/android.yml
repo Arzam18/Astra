@@ -27,7 +27,7 @@ jobs:
           WEIGHTS_URL="https://github.com/h1me01/Astra-Networks/releases/download/weights/${WEIGHTS_FILE}"
           curl -sL "$WEIGHTS_URL" -o "$WEIGHTS_FILE"
 
-      - name: Setup SIMDe and Globally Patch x86 Headers for ARM64
+      - name: Setup SIMDe and Globally Patch x86 Headers & Shifts for ARM64
         run: |
           # Download SIMDe headers to root directory
           git clone --depth 1 https://github.com/simd-everywhere/simde.git
@@ -63,19 +63,71 @@ jobs:
           #endif"""
                       content = content.replace(target, simde_block)
 
-              # Ensure 256-bit vector types activate on ARM64 in Simd.h
+              # Patch simd.h for ARM64 vector types and safe shift switch-cases
               if "simd.h" in path.lower():
                   content = content.replace(
                       "#elif defined(__AVX2__) || defined(__AVX__)",
                       "#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)"
                   )
 
-              # Patch std::aligned_alloc fallback for Android NDK
-              if "std::aligned_alloc" in content:
-                  content = content.replace(
-                      "ptr = std::aligned_alloc(Alignment, std::max(alignedBytes, Alignment));",
-                      "posix_memalign(&ptr, Alignment, std::max(alignedBytes, Alignment));"
-                  )
+                  # Inject switch-case macros for shifts requiring compile-time constants on ARM NEON
+                  shift_helpers = """
+          #if defined(__aarch64__) || defined(__ARM_NEON)
+          #define ASTRA_SW_SH16(op, a, imm) \\
+              switch(imm) { \\
+                  case 0: return op(a, 0); case 1: return op(a, 1); case 2: return op(a, 2); case 3: return op(a, 3); \\
+                  case 4: return op(a, 4); case 5: return op(a, 5); case 6: return op(a, 6); case 7: return op(a, 7); \\
+                  case 8: return op(a, 8); case 9: return op(a, 9); case 10: return op(a, 10); case 11: return op(a, 11); \\
+                  case 12: return op(a, 12); case 13: return op(a, 13); case 14: return op(a, 14); case 15: return op(a, 15); \\
+                  default: return op(a, 0); \\
+              }
+          #define ASTRA_SW_SH32(op, a, imm) \\
+              switch(imm) { \\
+                  case 0: return op(a, 0); case 1: return op(a, 1); case 2: return op(a, 2); case 3: return op(a, 3); \\
+                  case 4: return op(a, 4); case 5: return op(a, 5); case 6: return op(a, 6); case 7: return op(a, 7); \\
+                  case 8: return op(a, 8); case 9: return op(a, 9); case 10: return op(a, 10); case 11: return op(a, 11); \\
+                  case 12: return op(a, 12); case 13: return op(a, 13); case 14: return op(a, 14); case 15: return op(a, 15); \\
+                  case 16: return op(a, 16); case 17: return op(a, 17); case 18: return op(a, 18); case 19: return op(a, 19); \\
+                  case 20: return op(a, 20); case 21: return op(a, 21); case 22: return op(a, 22); case 23: return op(a, 23); \\
+                  case 24: return op(a, 24); case 25: return op(a, 25); case 26: return op(a, 26); case 27: return op(a, 27); \\
+                  case 28: return op(a, 28); case 29: return op(a, 29); case 30: return op(a, 30); case 31: return op(a, 31); \\
+                  default: return op(a, 0); \\
+              }
+          #endif
+          """
+                  content = shift_helpers + content
+                  
+                  # Replace shift implementations to use the switch helpers on ARM64
+                  content = content.replace("return _mm256_slli_epi16(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH16(_mm256_slli_epi16, a, imm)\n#else\n    return _mm256_slli_epi16(a, imm);\n#endif")
+                  content = content.replace("return _mm256_srli_epi16(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH16(_mm256_srli_epi16, a, imm)\n#else\n    return _mm256_srli_epi16(a, imm);\n#endif")
+                  content = content.replace("return _mm256_srai_epi16(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH16(_mm256_srai_epi16, a, imm)\n#else\n    return _mm256_srai_epi16(a, imm);\n#endif")
+                  content = content.replace("return _mm256_slli_epi32(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH32(_mm256_slli_epi32, a, imm)\n#else\n    return _mm256_slli_epi32(a, imm);\n#endif")
+                  content = content.replace("return _mm256_srli_epi32(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH32(_mm256_srli_epi32, a, imm)\n#else\n    return _mm256_srli_epi32(a, imm);\n#endif")
+                  content = content.replace("return _mm256_srai_epi32(a, imm);", "#if defined(__aarch64__) || defined(__ARM_NEON)\n    ASTRA_SW_SH32(_mm256_srai_epi32, a, imm)\n#else\n    return _mm256_srai_epi32(a, imm);\n#endif")
+
+              # Patch util.h for _mm_malloc / _mm_free and std::aligned_alloc fallbacks
+              if "util.h" in path.lower() or "util.hpp" in path.lower():
+                  if "_mm_malloc" in content or "aligned_alloc" in content:
+                      mm_malloc_fallback = """#if defined(__aarch64__) || defined(__ARM_NEON)
+          #include <stdlib.h>
+          #include <malloc.h>
+          inline void* _mm_malloc(size_t size, size_t alignment) {
+              void* ptr = nullptr;
+              if (posix_memalign(&ptr, alignment, size) != 0) return nullptr;
+              return ptr;
+          }
+          inline void _mm_free(void* ptr) {
+              free(ptr);
+          }
+          #endif
+          """
+                      content = mm_malloc_fallback + content
+
+                  if "std::aligned_alloc" in content:
+                      content = content.replace(
+                          "ptr = std::aligned_alloc(Alignment, std::max(alignedBytes, Alignment));",
+                          "posix_memalign(&ptr, Alignment, std::max(alignedBytes, Alignment));"
+                      )
 
               if content != original:
                   with open(path, "w", encoding="utf-8") as f:
