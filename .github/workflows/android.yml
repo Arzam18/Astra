@@ -1,35 +1,108 @@
-name: Build Astra Android
+name: Build Astra for Android
+
 on:
   workflow_dispatch:
+  push:
+    branches: [ "*" ]
+  pull_request:
+    branches: [ "*" ]
+
+permissions:
+  contents: write
+
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        build: [generic, neon, dotprod]
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y g++-13-aarch64-linux-gnu
-      - name: Fix ARM headers
-        run: sed -i 's/#include <xmmintrin.h>//g' src/util.h
-      - name: Build ${{ matrix.build }}
-        run: |
-          if [ "${{ matrix.build }}" = "generic" ]; then CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a";
-          elif [ "${{ matrix.build }}" = "neon" ]; then CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a+simd";
-          else CXXFLAGS="-O3 -static -std=c++20 -march=armv8-a+dotprod"; fi
-          make clean
-          make CXX=aarch64-linux-gnu-g++-13 CXXFLAGS="$CXXFLAGS" EXE=astra-${{ matrix.build }}
-      - uses: actions/upload-artifact@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
         with:
-          name: astra-${{ matrix.build }}
-          path: astra-${{ matrix.build }}
-      - uses: softprops/action-gh-release@v2
-        if: github.ref == 'refs/heads/main'
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Download sse2neon Header
+        run: |
+          curl -sL https://raw.githubusercontent.com/DLTcollab/sse2neon/master/sse2neon.h -o sse2neon.h
+
+      - name: Download Network Weight File
+        run: |
+          WEIGHTS_FILE="weights-v5-perm.nnue"
+          WEIGHTS_URL="https://github.com/h1me01/Astra-Networks/releases/download/weights/${WEIGHTS_FILE}"
+          curl -sL "$WEIGHTS_URL" -o "$WEIGHTS_FILE"
+
+      - name: Patch SIMD Headers and Types for ARM64
+        run: |
+          python3 -c '
+          import os
+
+          def patch_file(path):
+              with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                  content = f.read()
+
+              original = content
+
+              # Replace x86 SIMD headers with sse2neon
+              for header in ["<immintrin.h>", "<nmmintrin.h>", "<smmintrin.h>", "<xmmintrin.h>", "<emmintrin.h>"]:
+                  if header in content:
+                      content = content.replace(header, "\"sse2neon.h\"")
+
+              # Patch Simd.h macro checks so ARM64 adopts 256-bit sse2neon vector types
+              if "Simd.h" in path or "simd.h" in path:
+                  content = content.replace(
+                      "#elif defined(__AVX2__) || defined(__AVX__)",
+                      "#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)"
+                  )
+
+              # Patch std::aligned_alloc fallback for Android
+              if "std::aligned_alloc" in content:
+                  content = content.replace(
+                      "ptr = std::aligned_alloc(Alignment, std::max(alignedBytes, Alignment));",
+                      "posix_memalign(&ptr, Alignment, std::max(alignedBytes, Alignment));"
+                  )
+
+              if content != original:
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.write(content)
+                  print(f"Patched: {path}")
+
+          for root, dirs, files in os.walk("."):
+              for file in files:
+                  if file.endswith((".h", ".hpp", ".cpp", ".c")):
+                      patch_file(os.path.join(root, file))
+          '
+
+      - name: Build Astra for Android ARM64
+        run: |
+          NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
+
+          # Collect all C++ source files and Fathom tablebase code
+          SOURCES=$(find src -type f \( -name "*.cpp" -o -name "*.cc" \))
+          
+          # Add fathom tbprobe.c if it exists
+          if [ -f "third_party/fathom/tbprobe.c" ]; then
+            SOURCES="$SOURCES third_party/fathom/tbprobe.c"
+          fi
+
+          echo "Compiling Astra for Android ARM64..."
+          $NDK_CXX -O3 -flto -std=c++20 -pthread \
+            -march=armv8.2-a+dotprod+crypto \
+            -funroll-loops -fomit-frame-pointer -fno-exceptions \
+            -DNDEBUG -static-libstdc++ \
+            -DNNUE_PATH=\"weights-v5-perm.nnue\" \
+            -I. -Isrc -Ithird_party/fathom \
+            $SOURCES -lm -o astra-android-arm64
+
+          mkdir -p dist/bin
+          mv astra-android-arm64 dist/bin/
+
+      - name: Verify Android Binary
+        run: |
+          ls -lh dist/bin/
+          file dist/bin/*
+
+      - name: Upload Android Artifact
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: v1.0-${{ matrix.build }}
-          name: Astra Android ${{ matrix.build }}
-          files: astra-${{ matrix.build }}
-          prerelease: true
+          name: astra-android-arm64
+          path: dist/bin/*
