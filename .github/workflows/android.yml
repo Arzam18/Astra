@@ -36,7 +36,6 @@ jobs:
           import os
 
           def patch_file(path):
-              # Skip SIMDe files
               if "simde" in path.split(os.sep):
                   return
 
@@ -47,7 +46,6 @@ jobs:
 
               # Patch simd.h specifically to use SIMDe on ARM64
               if "simd.h" in path.lower():
-                  # Replace standard immintrin inclusion with SIMDe headers on ARM
                   if "<immintrin.h>" in content or "<xmmintrin.h>" in content:
                       simde_block = """#if defined(__aarch64__) || defined(__ARM_NEON)
           #define SIMDE_ENABLE_NATIVE_ALIASES
@@ -59,13 +57,12 @@ jobs:
                       content = content.replace("#include <immintrin.h>", simde_block)
                       content = content.replace("#include <xmmintrin.h>", simde_block)
 
-                  # Ensure 256-bit vector types activate on ARM64
                   content = content.replace(
                       "#elif defined(__AVX2__) || defined(__AVX__)",
                       "#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)"
                   )
 
-              # Replace std::aligned_alloc with posix_memalign for Android NDK
+              # Patch std::aligned_alloc fallback for Android NDK
               if "std::aligned_alloc" in content:
                   content = content.replace(
                       "ptr = std::aligned_alloc(Alignment, std::max(alignedBytes, Alignment));",
@@ -87,11 +84,8 @@ jobs:
         run: |
           NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
 
-          # Collect Astra source files
+          # Collect ONLY Astra source files (completely ignoring Fathom tbprobe.c)
           SOURCES=$(find src -type f \( -name "*.cpp" -o -name "*.cc" \))
-          if [ -f "third_party/fathom/tbprobe.c" ]; then
-            SOURCES="$SOURCES third_party/fathom/tbprobe.c"
-          fi
 
           echo "Compiling Astra for Android ARM64..."
           $NDK_CXX -O3 -flto -std=c++20 -pthread \
@@ -99,7 +93,7 @@ jobs:
             -funroll-loops -fomit-frame-pointer -fno-exceptions \
             -DNDEBUG -static-libstdc++ \
             -DNNUE_PATH=\"weights-v5-perm.nnue\" \
-            -I. -Isrc -Ithird_party/fathom \
+            -I. -Isrc \
             $SOURCES -lm -o astra-android-arm64
 
           mkdir -p dist/bin
