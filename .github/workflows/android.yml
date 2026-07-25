@@ -27,13 +27,19 @@ jobs:
           WEIGHTS_URL="https://github.com/h1me01/Astra-Networks/releases/download/weights/${WEIGHTS_FILE}"
           curl -sL "$WEIGHTS_URL" -o "$WEIGHTS_FILE"
 
-      - name: Setup SIMDe and Patch Astra for ARM64
+      - name: Setup SIMDe and Globally Patch x86 Headers for ARM64
         run: |
           # Download SIMDe headers to root directory
           git clone --depth 1 https://github.com/simd-everywhere/simde.git
 
           python3 -c '
           import os
+
+          x86_headers = [
+              "<immintrin.h>", "<xmmintrin.h>", "<emmintrin.h>", 
+              "<mmintrin.h>", "<nmmintrin.h>", "<smmintrin.h>", 
+              "<tmmintrin.h>", "<pmmintrin.h>"
+          ]
 
           def patch_file(path):
               if "simde" in path.split(os.sep):
@@ -44,19 +50,20 @@ jobs:
 
               original = content
 
-              # Patch simd.h specifically to use SIMDe on ARM64
-              if "simd.h" in path.lower():
-                  if "<immintrin.h>" in content or "<xmmintrin.h>" in content:
-                      simde_block = """#if defined(__aarch64__) || defined(__ARM_NEON)
+              # Globally replace any x86 intrinsic header with SIMDe equivalents on ARM64
+              for header in x86_headers:
+                  if header in content:
+                      simde_block = f"""#if defined(__aarch64__) || defined(__ARM_NEON)
           #define SIMDE_ENABLE_NATIVE_ALIASES
           #include "simde/x86/avx2.h"
           #include "simde/x86/fma.h"
           #else
-          #include <immintrin.h>
+          #include {header}
           #endif"""
-                      content = content.replace("#include <immintrin.h>", simde_block)
-                      content = content.replace("#include <xmmintrin.h>", simde_block)
+                      content = content.replace(header, simde_block)
 
+              # Ensure 256-bit vector types activate on ARM64 in Simd.h
+              if "simd.h" in path.lower():
                   content = content.replace(
                       "#elif defined(__AVX2__) || defined(__AVX__)",
                       "#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)"
@@ -84,7 +91,7 @@ jobs:
         run: |
           NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
 
-          # Collect ONLY Astra source files (completely ignoring Fathom tbprobe.c)
+          # Collect Astra source files
           SOURCES=$(find src -type f \( -name "*.cpp" -o -name "*.cc" \))
 
           echo "Compiling Astra for Android ARM64..."
