@@ -86,7 +86,6 @@ jobs:
           inline ivec_t {func_name}(ivec_t a, int imm) {{ return {intrinsic_name}(a, imm); }}
           #endif"""
 
-                  # Replace shift function definitions completely to avoid runtime-to-constant errors on ARM NEON
                   content = content.replace(
                       "inline ivec_t slli_epi16(ivec_t a, int imm) { return _mm256_slli_epi16(a, imm); }",
                       generate_switch_function("slli_epi16", "_mm256_slli_epi16", 15)
@@ -151,8 +150,11 @@ jobs:
         run: |
           NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
 
-          # Collect Astra source files
+          # Collect Astra and Fathom source files
           SOURCES=$(find src -type f \( -name "*.cpp" -o -name "*.cc" \))
+          if [ -f "third_party/fathom/tbprobe.c" ]; then
+            SOURCES="$SOURCES third_party/fathom/tbprobe.c"
+          fi
 
           echo "Compiling Astra for Android ARM64..."
           $NDK_CXX -O3 -flto -std=c++20 -pthread \
@@ -160,7 +162,7 @@ jobs:
             -funroll-loops -fomit-frame-pointer -fno-exceptions \
             -DNDEBUG -static-libstdc++ \
             -DNNUE_PATH=\"weights-v5-perm.nnue\" \
-            -I. -Isrc -I./simde \
+            -I. -Isrc -Ithird_party/fathom -I./simde \
             $SOURCES -lm -o astra-android-arm64
 
           mkdir -p dist/bin
