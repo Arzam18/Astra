@@ -19,7 +19,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 1
+          fetch-depth: 0
+
+      - name: Extract engine version
+        run: |
+          VERSION=$(git describe --tags --always 2>/dev/null || echo "dev-${GITHUB_SHA::7}")
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "Building Astra version: ${VERSION}"
 
       - name: Download Network Weight File
         run: |
@@ -146,35 +152,61 @@ jobs:
                       patch_file(os.path.join(root, file))
           '
 
-      - name: Build Astra for Android ARM64
+      - name: Build Astra (ARM64 v8-A)
         run: |
           NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
 
-          # Collect Astra and Fathom source files
           SOURCES=$(find src -type f \( -name "*.cpp" -o -name "*.cc" \))
           if [ -f "third_party/fathom/tbprobe.c" ]; then
             SOURCES="$SOURCES third_party/fathom/tbprobe.c"
           fi
 
-          echo "Compiling Astra for Android ARM64..."
+          mkdir -p dist/bin
+          echo "Compiling Astra for Android ARM64 v8-A..."
+          $NDK_CXX -O3 -flto -std=c++20 -pthread \
+            -march=armv8-a \
+            -funroll-loops -fomit-frame-pointer -fno-exceptions \
+            -DNDEBUG -static-libstdc++ \
+            -DNNUE_PATH=\"weights-v5-perm.nnue\" \
+            -I. -Isrc -Ithird_party/fathom -I./simde \
+            $SOURCES -lm -o dist/bin/astra-${{ env.VERSION }}-android-arm64-v8a
+
+      - name: Build Astra (ARM64 DotProd - Cortex A76+)
+        run: |
+          NDK_CXX="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++"
+
+          SOURCES=$(find src -type f \( -name "*.cpp" -o -name "*.cc" \))
+          if [ -f "third_party/fathom/tbprobe.c" ]; then
+            SOURCES="$SOURCES third_party/fathom/tbprobe.c"
+          fi
+
+          echo "Compiling Astra for Android ARM64 DotProd..."
           $NDK_CXX -O3 -flto -std=c++20 -pthread \
             -march=armv8.2-a+dotprod+crypto \
             -funroll-loops -fomit-frame-pointer -fno-exceptions \
             -DNDEBUG -static-libstdc++ \
             -DNNUE_PATH=\"weights-v5-perm.nnue\" \
             -I. -Isrc -Ithird_party/fathom -I./simde \
-            $SOURCES -lm -o astra-android-arm64
+            $SOURCES -lm -o dist/bin/astra-${{ env.VERSION }}-android-arm64-dotprod
 
-          mkdir -p dist/bin
-          mv astra-android-arm64 dist/bin/
-
-      - name: Verify Android Binary
+      - name: Verify Android Binaries
         run: |
           ls -lh dist/bin/
           file dist/bin/*
 
-      - name: Upload Android Artifact
+      - name: Upload Android Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: astra-android-arm64
+          name: astra-${{ env.VERSION }}-android-binaries
           path: dist/bin/*
+
+      - name: Create prerelease
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}-android
+          name: Astra ${{ env.VERSION }} (Android)
+          prerelease: true
+          files: dist/bin/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
