@@ -2,10 +2,11 @@ name: Build Astra for Android
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ "*" ]
-  pull_request:
-    branches: [ "*" ]
+    inputs:
+      uci_date:
+        description: "UCI version/date (e.g. 20260623)"
+        required: true
+        default: "20260623"
 
 permissions:
   contents: write
@@ -21,11 +22,58 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Extract engine version
+      - name: Set UCI Version
+        shell: bash
+        env:
+          UCI_DATE: ${{ inputs.uci_date }}
         run: |
-          VERSION=$(git describe --tags --always 2>/dev/null || echo "dev-${GITHUB_SHA::7}")
-          echo "VERSION=${VERSION}" >> $GITHUB_ENV
-          echo "Building Astra version: ${VERSION}"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          version = os.environ["UCI_DATE"]
+
+          if not version.isdigit():
+              raise SystemExit("uci_date must contain digits only, e.g. 20260918")
+
+          if len(version) != 8:
+              raise SystemExit("uci_date must be exactly 8 digits, e.g. 20260918")
+
+          old = 'const std::string version = "7.1-dev";'
+          new = f'const std::string version = "{version}";'
+
+          found = False
+
+          for path in Path(".").rglob("*"):
+              if not path.is_file():
+                  continue
+
+              if any(part in {".git", "simde"} for part in path.parts):
+                  continue
+
+              if path.suffix not in {".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"}:
+                  continue
+
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except (UnicodeDecodeError, OSError):
+                  continue
+
+              if old in text:
+                  text = text.replace(old, new, 1)
+                  path.write_text(text, encoding="utf-8")
+                  print(f"Patched Astra version in {path}")
+                  found = True
+                  break
+
+          if not found:
+              raise SystemExit(
+                  'Could not find: const std::string version = "7.1-dev";'
+              )
+          PY
+
+          echo "VERSION=${UCI_DATE}" >> "$GITHUB_ENV"
+          echo "Building Astra UCI version: ${UCI_DATE}"
 
       - name: Download Network Weight File
         run: |
@@ -201,7 +249,7 @@ jobs:
           path: dist/bin/*
 
       - name: Create prerelease
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}-android
